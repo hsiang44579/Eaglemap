@@ -199,9 +199,9 @@ header h1{font-size:17px;font-weight:700;letter-spacing:.03em}
         <div class="fg">
           <label>價格區間（萬元）</label>
           <div class="range-row">
-            <input type="number" id="f-pmin" placeholder="最低" min="0" step="50" oninput="doFilter()">
+            <input type="number" id="f-pmin" placeholder="最低" min="0" step="50" oninput="debouncedFilter()">
             <span>—</span>
-            <input type="number" id="f-pmax" placeholder="最高" min="0" step="50" oninput="doFilter()">
+            <input type="number" id="f-pmax" placeholder="最高" min="0" step="50" oninput="debouncedFilter()">
           </div>
         </div>
 
@@ -252,6 +252,7 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
   attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
   maxZoom:19
 }).addTo(map);
+const MARKER_LAYER = L.layerGroup().addTo(map);
 
 // ── 區域範圍多邊形 ──
 const AREA_ZONES = {
@@ -487,8 +488,7 @@ function makeGroupIcon(items){
 let GROUP_MARKERS = {};
 
 function buildMarkers(){
-  // 清除舊 marker
-  Object.values(GROUP_MARKERS).forEach(m=>map.removeLayer(m));
+  MARKER_LAYER.clearLayers();
   GROUP_MARKERS = {};
   DATA.forEach(d=>d.marker=null);
 
@@ -751,7 +751,7 @@ function clickItem(id){
   const siblings = DATA.filter(x=>x.lat&&x.lng&&x.lat.toFixed(5)+','+x.lng.toFixed(5)===key);
 
   // 確保這筆物件的 marker 顯示在地圖上
-  if(d.marker) map.addLayer(d.marker);
+  if(d.marker) MARKER_LAYER.addLayer(d.marker);
 
   // 左側列表點擊：永遠直接顯示單筆詳細資訊（不顯示群組清單）
   if(d.marker){
@@ -775,7 +775,9 @@ function clickItem(id){
 }
 
 // ── 篩選邏輯 ──
-// 判斷目前是否有選取任何篩選條件
+function debounce(fn, ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; }
+const debouncedFilter = debounce(()=>doFilter(), 300);
+
 function hasAnyFilter(){
   const areas = getSelected('dd-area');
   const types = getSelected('dd-type');
@@ -816,12 +818,11 @@ function doFilter(){
     groupVis[key].push(d);
   });
 
-  // 更新每個群組 marker
+  // 一次清除所有 marker，再批次加入可見的
+  MARKER_LAYER.clearLayers();
   Object.entries(GROUP_MARKERS).forEach(([key, m])=>{
     if(groupVis[key]){
-      // 更新圖標（可能只有部分物件符合）
       m.setIcon(makeGroupIcon(groupVis[key]));
-      // 更新 Popup 內容
       const gItems = groupVis[key];
       if(gItems.length === 1){
         m.setPopupContent(popupHtml(gItems[0]));
@@ -836,9 +837,7 @@ function doFilter(){
           m.openPopup();
         });
       }
-      map.addLayer(m);
-    } else {
-      map.removeLayer(m);
+      MARKER_LAYER.addLayer(m);
     }
   });
 
@@ -938,20 +937,17 @@ async function loadData(){
 
   try {
     // 清除舊 markers
-    Object.values(GROUP_MARKERS).forEach(m=>map.removeLayer(m));
+    MARKER_LAYER.clearLayers();
     GROUP_MARKERS = {};
     DATA.forEach(d=>d.marker=null);
 
-    // 同時抓取所有工作表
-    const fetchSheet = async (sheetName, sheetIdx) => {
-      msg.textContent = `讀取「${sheetName}」工作表中… (${sheetIdx+1}/${SHEET_NAMES.length})`;
+    const fetchSheet = async (sheetName) => {
       const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(sheetName)}`;
       const res  = await fetch(url);
       const text = await res.text();
-      // 去除 Google 包裝字串
-                  const start = text.indexOf('('); const cleaned = start > -1 ? text.slice(start+1, text.lastIndexOf(')')) : text;
+      const start = text.indexOf('(');
+      const cleaned = start > -1 ? text.slice(start+1, text.lastIndexOf(')')) : text;
       const json = JSON.parse(cleaned);
-      // 檢查是否有錯誤（例如工作表不存在）
       if(json.status === 'error'){
         console.warn(`工作表「${sheetName}」讀取失敗：`, json.errors);
         return null;
@@ -959,22 +955,23 @@ async function loadData(){
       return json;
     };
 
-    // 依序抓取，單一工作表失敗不影響其他
+    // 並行抓取所有工作表
+    const results = await Promise.all(
+      SHEET_NAMES.map(name => fetchSheet(name).catch(err=>{
+        console.warn(`「${name}」讀取異常，略過：`, err.message);
+        return null;
+      }))
+    );
     let allData = [];
-    for(let i = 0; i < SHEET_NAMES.length; i++){
-      try{
-        const json = await fetchSheet(SHEET_NAMES[i], i);
-        if(json && json.table){
-          const rows = parseSheet(json, allData.length);
-          allData = allData.concat(rows);
-          console.log(`「${SHEET_NAMES[i]}」讀取完成，共 ${rows.length} 筆`);
-        } else {
-          console.warn(`「${SHEET_NAMES[i]}」無資料或工作表不存在，略過`);
-        }
-      } catch(sheetErr){
-        console.warn(`「${SHEET_NAMES[i]}」讀取異常，略過：`, sheetErr.message);
+    results.forEach((json, i)=>{
+      if(json && json.table){
+        const rows = parseSheet(json, allData.length);
+        allData = allData.concat(rows);
+        console.log(`「${SHEET_NAMES[i]}」讀取完成，共 ${rows.length} 筆`);
+      } else if(json !== null){
+        console.warn(`「${SHEET_NAMES[i]}」無資料或工作表不存在，略過`);
       }
-    }
+    });
 
     if(allData.length === 0){
       throw new Error('所有工作表皆無法讀取，請確認試算表設定');
