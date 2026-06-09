@@ -988,22 +988,24 @@ function renderData(allData){
   buildZones();
 }
 
-// ── 套用初始篩選（URL 優先，否則預設值）──
+// ── 套用初始篩選（URL 優先，否則顯示全部）──
 function applyInitialFilters(){
   const f=loadFilterFromUrl();
   const hasUrl=f.areas||f.types||f.coms||f.lays||f.pmin||f.pmax;
-  preSelectDd('dd-area', hasUrl&&f.areas?f.areas:['尚順昌隆','公園東站','大埔'], '全部區域');
-  onAreaChange();
-  setTimeout(()=>{
-    preSelectDd('dd-type', hasUrl&&f.types?f.types:['電梯大樓'], '全部型態');
-    if(hasUrl){
-      if(f.coms) preSelectDd('dd-com',f.coms,'全部社區');
-      if(f.lays) preSelectDd('dd-lay',f.lays,'全部格局');
-      if(f.pmin) document.getElementById('f-pmin').value=f.pmin;
-      if(f.pmax) document.getElementById('f-pmax').value=f.pmax;
-    }
-    onTypeChange();
-  },50);
+  if(hasUrl){
+    if(f.areas) preSelectDd('dd-area',f.areas,'全部區域');
+    onAreaChange();
+    setTimeout(()=>{
+      if(f.types) preSelectDd('dd-type',f.types,'全部型態');
+      if(f.coms)  preSelectDd('dd-com',f.coms,'全部社區');
+      if(f.lays)  preSelectDd('dd-lay',f.lays,'全部格局');
+      if(f.pmin)  document.getElementById('f-pmin').value=f.pmin;
+      if(f.pmax)  document.getElementById('f-pmax').value=f.pmax;
+      onTypeChange();
+    },50);
+  } else {
+    doFilter(); // 無 URL 篩選 → 顯示全部物件
+  }
 }
 
 async function loadData(){
