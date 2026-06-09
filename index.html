@@ -231,10 +231,11 @@ header h1{font-size:17px;font-weight:700;letter-spacing:.03em}
 
 <script>
 // ══════════════════════════════════════════════
-//  Google 試算表設定
+//  資料來源設定
 // ══════════════════════════════════════════════
-const SHEET_ID   = '1ihiCTbbzvOxPyQNq9fF2TTFv2gPwaQOPfyKVwLFMrxs';
-const SHEET_NAMES = ['頭份', '竹南']; // 可自由新增工作表名稱
+const GAS_URL = 'https://script.google.com/macros/s/AKfycby8lIs0Ldr1W_IcWtStHJxjjmHRmhKv3Njdp8TYHt5rjMY1AusjgAkIM6QttaLSfXWq/exec';
+const SHEET_ID   = '1ihiCTbbzvOxPyQNq9fF2TTFv2gPwaQOPfyKVwLFMrxs'; // 備用
+const SHEET_NAMES = ['頭份', '竹南'];
 
 // 欄位名稱對應（與試算表第一行標題一致）
 const COL = {
@@ -981,28 +982,45 @@ function loadFilterFromUrl(){
   };
 }
 
-// ── 並行抓取所有工作表（含 8 秒逾時）──
+// ── 從 GAS 抓取資料（含 10 秒逾時）──
 async function fetchAllSheets(){
-  const fetchSheet = async name => {
-    const ctrl = new AbortController();
-    const timer = setTimeout(()=>ctrl.abort(), 8000);
-    try{
-      const url=`https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(name)}`;
-      const text=await(await fetch(url,{signal:ctrl.signal})).text();
-      const s=text.indexOf('(');
-      const json=JSON.parse(s>-1?text.slice(s+1,text.lastIndexOf(')')):text);
-      if(json.status==='error'){ console.warn(`「${name}」讀取失敗`,json.errors); return null; }
-      return json;
-    }catch(e){
-      if(e.name==='AbortError') console.warn(`「${name}」請求逾時（8秒）`);
-      else console.warn(`「${name}」異常`,e.message);
-      return null;
-    }finally{ clearTimeout(timer); }
-  };
-  const results=await Promise.all(SHEET_NAMES.map(n=>fetchSheet(n)));
-  let all=[];
-  results.forEach((json,i)=>{ if(json&&json.table){ const rows=parseSheet(json,all.length); all=all.concat(rows); console.log(`「${SHEET_NAMES[i]}」${rows.length}筆`); } });
-  return all;
+  const ctrl = new AbortController();
+  const timer = setTimeout(()=>ctrl.abort(), 10000);
+  try{
+    const res = await fetch(GAS_URL, {signal: ctrl.signal});
+    const raw = await res.json();
+    if(!Array.isArray(raw)) throw new Error('GAS 回傳格式錯誤');
+    return raw
+      .filter(r => r && Object.values(r).some(v => v !== ''))
+      .map((r, i) => {
+        const lat = parseFloat(r.緯度);
+        const lng = parseFloat(r.經度);
+        return {
+          id:       i,
+          物件編號: r.物件編號||'',
+          案名:     r.案名||'',
+          區域:     r.區域||'',
+          型態:     r.型態||'',
+          社區:     r.社區||'',
+          售價:     r.售價||'',
+          格局:     r.格局||'',
+          坪數:     r.坪數||'',
+          樓層:     r.樓層||'',
+          屋齡:     formatAge(r.屋齡||''),
+          車位:     r.車位||'',
+          地址:     r.地址||'',
+          物件連結: r.物件連結||'',
+          lat:      isNaN(lat)?null:lat,
+          lng:      isNaN(lng)?null:lng,
+          priceNum: parsePrice(r.售價||''),
+          marker:   null,
+        };
+      });
+  }catch(e){
+    if(e.name==='AbortError') console.warn('GAS 請求逾時（10秒）');
+    else console.warn('GAS 請求異常', e.message);
+    return [];
+  }finally{ clearTimeout(timer); }
 }
 
 // ── 將資料渲染到地圖（可重複呼叫）──
