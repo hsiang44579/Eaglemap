@@ -997,7 +997,7 @@ function gasRowToObj(r, i){
 
 async function fetchFromGAS(){
   const ctrl=new AbortController();
-  const timer=setTimeout(()=>ctrl.abort(),10000);
+  const timer=setTimeout(()=>ctrl.abort(), 4000); // 4秒快速失敗
   try{
     const res=await fetch(GAS_URL,{signal:ctrl.signal});
     clearTimeout(timer);
@@ -1033,10 +1033,15 @@ async function fetchFromGviz(){
 }
 
 async function fetchAllSheets(){
-  const gasData=await fetchFromGAS();
-  if(gasData) return gasData;
-  const gvizData=await fetchFromGviz();
-  return gvizData||[];
+  // GAS 與 gviz 同時啟動，GAS 最多等 4 秒，失敗直接用 gviz 結果
+  const gvizPromise = fetchFromGviz();
+  const gasData = await fetchFromGAS();
+  if(gasData && gasData.length){
+    console.log('使用 GAS 資料');
+    return gasData;
+  }
+  console.log('GAS 失敗，使用 gviz 備援');
+  return (await gvizPromise) || [];
 }
 
 // ── 將資料渲染到地圖（可重複呼叫）──
