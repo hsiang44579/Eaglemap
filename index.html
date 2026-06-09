@@ -982,45 +982,61 @@ function loadFilterFromUrl(){
   };
 }
 
-// ── 從 GAS 抓取資料（含 10 秒逾時）──
-async function fetchAllSheets(){
-  const ctrl = new AbortController();
-  const timer = setTimeout(()=>ctrl.abort(), 10000);
+// ── 抓取資料：GAS 優先，失敗自動退回 gviz ──
+function gasRowToObj(r, i){
+  const lat=parseFloat(r.緯度), lng=parseFloat(r.經度);
+  return {
+    id:i, 物件編號:r.物件編號||'', 案名:r.案名||'', 區域:r.區域||'',
+    型態:r.型態||'', 社區:r.社區||'', 售價:r.售價||'', 格局:r.格局||'',
+    坪數:r.坪數||'', 樓層:r.樓層||'', 屋齡:formatAge(r.屋齡||''),
+    車位:r.車位||'', 地址:r.地址||'', 物件連結:r.物件連結||'',
+    lat:isNaN(lat)?null:lat, lng:isNaN(lng)?null:lng,
+    priceNum:parsePrice(r.售價||''), marker:null,
+  };
+}
+
+async function fetchFromGAS(){
+  const ctrl=new AbortController();
+  const timer=setTimeout(()=>ctrl.abort(),10000);
   try{
-    const res = await fetch(GAS_URL, {signal: ctrl.signal});
-    const raw = await res.json();
-    if(!Array.isArray(raw)) throw new Error('GAS 回傳格式錯誤');
-    return raw
-      .filter(r => r && Object.values(r).some(v => v !== ''))
-      .map((r, i) => {
-        const lat = parseFloat(r.緯度);
-        const lng = parseFloat(r.經度);
-        return {
-          id:       i,
-          物件編號: r.物件編號||'',
-          案名:     r.案名||'',
-          區域:     r.區域||'',
-          型態:     r.型態||'',
-          社區:     r.社區||'',
-          售價:     r.售價||'',
-          格局:     r.格局||'',
-          坪數:     r.坪數||'',
-          樓層:     r.樓層||'',
-          屋齡:     formatAge(r.屋齡||''),
-          車位:     r.車位||'',
-          地址:     r.地址||'',
-          物件連結: r.物件連結||'',
-          lat:      isNaN(lat)?null:lat,
-          lng:      isNaN(lng)?null:lng,
-          priceNum: parsePrice(r.售價||''),
-          marker:   null,
-        };
-      });
+    const res=await fetch(GAS_URL,{signal:ctrl.signal});
+    clearTimeout(timer);
+    const raw=await res.json();
+    if(!Array.isArray(raw)||raw.length===0) return null;
+    console.log(`GAS 成功，共 ${raw.length} 筆`);
+    return raw.filter(r=>r&&Object.values(r).some(v=>v!=='')).map(gasRowToObj);
   }catch(e){
-    if(e.name==='AbortError') console.warn('GAS 請求逾時（10秒）');
-    else console.warn('GAS 請求異常', e.message);
-    return [];
-  }finally{ clearTimeout(timer); }
+    clearTimeout(timer);
+    console.warn('GAS 失敗：',e.message,'→ 切換 gviz');
+    return null;
+  }
+}
+
+async function fetchFromGviz(){
+  const fetchSheet=async name=>{
+    const ctrl=new AbortController();
+    const timer=setTimeout(()=>ctrl.abort(),10000);
+    try{
+      const url=`https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(name)}`;
+      const text=await(await fetch(url,{signal:ctrl.signal})).text();
+      clearTimeout(timer);
+      const s=text.indexOf('(');
+      const json=JSON.parse(s>-1?text.slice(s+1,text.lastIndexOf(')')):text);
+      if(json.status==='error') return null;
+      return json;
+    }catch(e){ clearTimeout(timer); return null; }
+  };
+  const results=await Promise.all(SHEET_NAMES.map(n=>fetchSheet(n)));
+  let all=[];
+  results.forEach((json,i)=>{ if(json&&json.table){ const rows=parseSheet(json,all.length); all=all.concat(rows); console.log(`gviz「${SHEET_NAMES[i]}」${rows.length}筆`); } });
+  return all.length?all:null;
+}
+
+async function fetchAllSheets(){
+  const gasData=await fetchFromGAS();
+  if(gasData) return gasData;
+  const gvizData=await fetchFromGviz();
+  return gvizData||[];
 }
 
 // ── 將資料渲染到地圖（可重複呼叫）──
