@@ -938,9 +938,19 @@ function parseSheet(json, startId){
     });
 }
 
-// ── 快取（30 分鐘 TTL，stale-while-revalidate）──
-const CACHE_KEY = 'eaglemap_v1', CACHE_TTL = 30 * 60 * 1000;
-function loadCache(){ try{ const r=localStorage.getItem(CACHE_KEY); if(!r) return null; const {data,ts}=JSON.parse(r); return Date.now()-ts>CACHE_TTL?null:data; }catch{ return null; } }
+// ── 快取（4 小時 TTL，stale-while-revalidate）──
+const CACHE_KEY = 'eaglemap_v1', CACHE_TTL = 4 * 60 * 60 * 1000;
+// ignoreExpiry=true：有快取就回傳（即使過期），用於即時渲染
+function loadCache(ignoreExpiry=false){
+  try{
+    const r=localStorage.getItem(CACHE_KEY);
+    if(!r) return null;
+    const {data,ts}=JSON.parse(r);
+    const fresh=Date.now()-ts<=CACHE_TTL;
+    if(!ignoreExpiry && !fresh) return null;
+    return {data, fresh};
+  }catch{ return null; }
+}
 function saveCache(data){ try{ localStorage.setItem(CACHE_KEY,JSON.stringify({data,ts:Date.now()})); }catch(e){ console.warn('快取儲存失敗',e); } }
 
 // ── URL 篩選狀態 ──
@@ -968,17 +978,25 @@ function loadFilterFromUrl(){
   };
 }
 
-// ── 並行抓取所有工作表 ──
+// ── 並行抓取所有工作表（含 8 秒逾時）──
 async function fetchAllSheets(){
   const fetchSheet = async name => {
-    const url=`https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(name)}`;
-    const text=await(await fetch(url)).text();
-    const s=text.indexOf('(');
-    const json=JSON.parse(s>-1?text.slice(s+1,text.lastIndexOf(')')):text);
-    if(json.status==='error'){ console.warn(`「${name}」讀取失敗`,json.errors); return null; }
-    return json;
+    const ctrl = new AbortController();
+    const timer = setTimeout(()=>ctrl.abort(), 8000);
+    try{
+      const url=`https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(name)}`;
+      const text=await(await fetch(url,{signal:ctrl.signal})).text();
+      const s=text.indexOf('(');
+      const json=JSON.parse(s>-1?text.slice(s+1,text.lastIndexOf(')')):text);
+      if(json.status==='error'){ console.warn(`「${name}」讀取失敗`,json.errors); return null; }
+      return json;
+    }catch(e){
+      if(e.name==='AbortError') console.warn(`「${name}」請求逾時（8秒）`);
+      else console.warn(`「${name}」異常`,e.message);
+      return null;
+    }finally{ clearTimeout(timer); }
   };
-  const results=await Promise.all(SHEET_NAMES.map(n=>fetchSheet(n).catch(e=>{ console.warn(`「${n}」異常`,e.message); return null; })));
+  const results=await Promise.all(SHEET_NAMES.map(n=>fetchSheet(n)));
   let all=[];
   results.forEach((json,i)=>{ if(json&&json.table){ const rows=parseSheet(json,all.length); all=all.concat(rows); console.log(`「${SHEET_NAMES[i]}」${rows.length}筆`); } });
   return all;
@@ -1016,41 +1034,53 @@ function applyInitialFilters(){
   }
 }
 
+function restoreFilters(sa,st,sc,sl,sp,sq){
+  preSelectDd('dd-area',sa,'全部區域'); onAreaChange();
+  setTimeout(()=>{
+    preSelectDd('dd-type',st,'全部型態');
+    preSelectDd('dd-com',sc,'全部社區');
+    preSelectDd('dd-lay',sl,'全部格局');
+    document.getElementById('f-pmin').value=sp;
+    document.getElementById('f-pmax').value=sq;
+    onTypeChange();
+  },50);
+}
+
 async function loadData(){
   const overlay=document.getElementById('overlay');
   const msg=document.getElementById('overlay-msg');
+  const btn=document.querySelector('.refresh-btn');
 
-  // 快取命中：立即渲染，背景更新
-  const cached=loadCache();
+  // 有任何快取（包括過期）→ 先立即渲染，不卡 loading
+  const cached=loadCache(true);
   if(cached){
-    renderData(cached);
+    renderData(cached.data);
     applyInitialFilters();
-    const btn=document.querySelector('.refresh-btn');
-    btn.textContent='⟳ 更新中…'; btn.style.opacity='0.6';
-    fetchAllSheets().then(fresh=>{
-      if(fresh&&fresh.length){
-        saveCache(fresh);
-        // 儲存當前篩選狀態，重新渲染後還原
-        const sa=getSelected('dd-area'),st=getSelected('dd-type');
-        const sc=getSelected('dd-com'),sl=getSelected('dd-lay');
-        const sp=document.getElementById('f-pmin').value,sq=document.getElementById('f-pmax').value;
-        renderData(fresh);
-        preSelectDd('dd-area',sa,'全部區域'); onAreaChange();
-        setTimeout(()=>{
-          preSelectDd('dd-type',st,'全部型態');
-          preSelectDd('dd-com',sc,'全部社區');
-          preSelectDd('dd-lay',sl,'全部格局');
-          document.getElementById('f-pmin').value=sp;
-          document.getElementById('f-pmax').value=sq;
-          onTypeChange();
-        },50);
-      }
-    }).catch(e=>console.warn('背景更新失敗',e))
-    .finally(()=>{ const b=document.querySelector('.refresh-btn'); b.textContent='⟳ 重新整理'; b.style.opacity=''; });
+
+    if(!cached.fresh){
+      // 快取已過期：顯示更新指示，背景抓新資料
+      btn.textContent='⟳ 更新中…'; btn.style.opacity='0.6';
+      fetchAllSheets().then(fresh=>{
+        if(fresh&&fresh.length){
+          saveCache(fresh);
+          const sa=getSelected('dd-area'),st=getSelected('dd-type');
+          const sc=getSelected('dd-com'),sl=getSelected('dd-lay');
+          const sp=document.getElementById('f-pmin').value,sq=document.getElementById('f-pmax').value;
+          renderData(fresh);
+          restoreFilters(sa,st,sc,sl,sp,sq);
+        }
+      }).catch(e=>console.warn('背景更新失敗',e))
+      .finally(()=>{ btn.textContent='⟳ 重新整理'; btn.style.opacity=''; });
+    } else {
+      // 快取仍新鮮：靜默背景更新（不顯示任何指示）
+      fetchAllSheets().then(fresh=>{
+        if(fresh&&fresh.length) saveCache(fresh);
+      }).catch(()=>{});
+    }
     return;
   }
 
-  // 無快取：正常載入
+  // 完全無快取：顯示 loading，等待首次抓取
   overlay.classList.remove('hidden');
   msg.textContent='正在讀取資料…';
   try{
