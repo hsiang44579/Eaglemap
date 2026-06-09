@@ -5,7 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>飛鷹地產｜在售物件地圖</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.css"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.Default.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/leaflet.markercluster.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;font-family:'Microsoft JhengHei','PingFang TC',sans-serif}
 body{display:flex;flex-direction:column;height:100vh;background:#f5f5f3;color:#222}
@@ -252,7 +255,15 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
   attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
   maxZoom:19
 }).addTo(map);
-const MARKER_LAYER = L.layerGroup().addTo(map);
+const MARKER_LAYER = L.markerClusterGroup({
+  maxClusterRadius: 50,
+  disableClusteringAtZoom: 16,
+  showCoverageOnHover: false,
+  iconCreateFunction: cluster => {
+    const n = cluster.getChildCount();
+    return L.divIcon({ html:`<div class="mk mk-blue">⊕${n}</div>`, className:'', iconAnchor:[30,14] });
+  },
+}).addTo(map);
 
 // ── 區域範圍多邊形 ──
 const AREA_ZONES = {
@@ -326,36 +337,25 @@ const AREA_ZONES = {
 
 // 建立區域多邊形圖層
 const ZONE_LAYERS = {};
+const ZONE_LABELS = [];
 function buildZones(){
+  // 清除舊圖層（快取更新時避免重疊）
+  Object.values(ZONE_LAYERS).forEach(p=>map.removeLayer(p));
+  Object.keys(ZONE_LAYERS).forEach(k=>delete ZONE_LAYERS[k]);
+  ZONE_LABELS.forEach(m=>map.removeLayer(m));
+  ZONE_LABELS.length = 0;
+
   Object.entries(AREA_ZONES).forEach(([name, zone])=>{
-    // 多邊形
     const poly = L.polygon(zone.coords, {
-      color: zone.color,
-      weight: 2,
-      opacity: 0.7,
-      fillColor: zone.color,
-      fillOpacity: 0.08,
-      dashArray: '6,4',
+      color: zone.color, weight: 2, opacity: 0.7,
+      fillColor: zone.color, fillOpacity: 0.08, dashArray: '6,4',
     }).addTo(map);
-
-    // 區域名稱標籤（放在多邊形中心）
-    const bounds = poly.getBounds();
-    const center = bounds.getCenter();
+    const center = poly.getBounds().getCenter();
     const label = L.divIcon({
-      html: `<div style="
-        background:${zone.color};color:#fff;
-        padding:3px 10px;border-radius:12px;
-        font-size:12px;font-weight:700;
-        white-space:nowrap;opacity:0.85;
-        font-family:'Microsoft JhengHei','PingFang TC',sans-serif;
-        box-shadow:0 1px 4px rgba(0,0,0,0.25);
-        pointer-events:none;
-      ">${name}</div>`,
-      className: '',
-      iconAnchor: [40, 14],
+      html: `<div style="background:${zone.color};color:#fff;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:700;white-space:nowrap;opacity:0.85;font-family:'Microsoft JhengHei','PingFang TC',sans-serif;box-shadow:0 1px 4px rgba(0,0,0,0.25);pointer-events:none;">${name}</div>`,
+      className: '', iconAnchor: [40, 14],
     });
-    L.marker(center, {icon: label, interactive: false, zIndexOffset: -100}).addTo(map);
-
+    ZONE_LABELS.push(L.marker(center, {icon: label, interactive: false, zIndexOffset: -100}).addTo(map));
     ZONE_LAYERS[name] = poly;
   });
 }
@@ -851,6 +851,7 @@ function doFilter(){
       {padding:[50,50], maxZoom:17}
     );
   }
+  saveFilterToUrl();
 }
 
 function doReset(){
@@ -929,77 +930,130 @@ function parseSheet(json, startId){
     });
 }
 
-async function loadData(){
-  const overlay = document.getElementById('overlay');
-  const msg     = document.getElementById('overlay-msg');
-  overlay.classList.remove('hidden');
-  msg.textContent = '正在讀取資料…';
+// ── 快取（30 分鐘 TTL，stale-while-revalidate）──
+const CACHE_KEY = 'eaglemap_v1', CACHE_TTL = 30 * 60 * 1000;
+function loadCache(){ try{ const r=localStorage.getItem(CACHE_KEY); if(!r) return null; const {data,ts}=JSON.parse(r); return Date.now()-ts>CACHE_TTL?null:data; }catch{ return null; } }
+function saveCache(data){ try{ localStorage.setItem(CACHE_KEY,JSON.stringify({data,ts:Date.now()})); }catch(e){ console.warn('快取儲存失敗',e); } }
 
-  try {
-    // 清除舊 markers
-    MARKER_LAYER.clearLayers();
-    GROUP_MARKERS = {};
-    DATA.forEach(d=>d.marker=null);
+// ── URL 篩選狀態 ──
+function saveFilterToUrl(){
+  const p=new URLSearchParams();
+  const a=getSelected('dd-area'),t=getSelected('dd-type'),c=getSelected('dd-com'),l=getSelected('dd-lay');
+  const pmin=document.getElementById('f-pmin').value, pmax=document.getElementById('f-pmax').value;
+  if(a.length) p.set('area',a.join(','));
+  if(t.length) p.set('type',t.join(','));
+  if(c.length) p.set('com',c.join(','));
+  if(l.length) p.set('lay',l.join(','));
+  if(pmin) p.set('pmin',pmin);
+  if(pmax) p.set('pmax',pmax);
+  history.replaceState(null,'',p.toString()?'?'+p:location.pathname);
+}
+function loadFilterFromUrl(){
+  const p=new URLSearchParams(location.search);
+  return {
+    areas: p.get('area')?p.get('area').split(','):null,
+    types: p.get('type')?p.get('type').split(','):null,
+    coms:  p.get('com') ?p.get('com').split(',') :null,
+    lays:  p.get('lay') ?p.get('lay').split(',') :null,
+    pmin:  p.get('pmin')||'',
+    pmax:  p.get('pmax')||'',
+  };
+}
 
-    const fetchSheet = async (sheetName) => {
-      const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(sheetName)}`;
-      const res  = await fetch(url);
-      const text = await res.text();
-      const start = text.indexOf('(');
-      const cleaned = start > -1 ? text.slice(start+1, text.lastIndexOf(')')) : text;
-      const json = JSON.parse(cleaned);
-      if(json.status === 'error'){
-        console.warn(`工作表「${sheetName}」讀取失敗：`, json.errors);
-        return null;
-      }
-      return json;
-    };
+// ── 並行抓取所有工作表 ──
+async function fetchAllSheets(){
+  const fetchSheet = async name => {
+    const url=`https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(name)}`;
+    const text=await(await fetch(url)).text();
+    const s=text.indexOf('(');
+    const json=JSON.parse(s>-1?text.slice(s+1,text.lastIndexOf(')')):text);
+    if(json.status==='error'){ console.warn(`「${name}」讀取失敗`,json.errors); return null; }
+    return json;
+  };
+  const results=await Promise.all(SHEET_NAMES.map(n=>fetchSheet(n).catch(e=>{ console.warn(`「${n}」異常`,e.message); return null; })));
+  let all=[];
+  results.forEach((json,i)=>{ if(json&&json.table){ const rows=parseSheet(json,all.length); all=all.concat(rows); console.log(`「${SHEET_NAMES[i]}」${rows.length}筆`); } });
+  return all;
+}
 
-    // 並行抓取所有工作表
-    const results = await Promise.all(
-      SHEET_NAMES.map(name => fetchSheet(name).catch(err=>{
-        console.warn(`「${name}」讀取異常，略過：`, err.message);
-        return null;
-      }))
-    );
-    let allData = [];
-    results.forEach((json, i)=>{
-      if(json && json.table){
-        const rows = parseSheet(json, allData.length);
-        allData = allData.concat(rows);
-        console.log(`「${SHEET_NAMES[i]}」讀取完成，共 ${rows.length} 筆`);
-      } else if(json !== null){
-        console.warn(`「${SHEET_NAMES[i]}」無資料或工作表不存在，略過`);
-      }
-    });
+// ── 將資料渲染到地圖（可重複呼叫）──
+function renderData(allData){
+  MARKER_LAYER.clearLayers();
+  GROUP_MARKERS={};
+  DATA.forEach(d=>d.marker=null);
+  DATA=allData;
+  buildDropdowns();
+  buildMarkers();
+  map.invalidateSize();
+  buildZones();
+}
 
-    if(allData.length === 0){
-      throw new Error('所有工作表皆無法讀取，請確認試算表設定');
+// ── 套用初始篩選（URL 優先，否則預設值）──
+function applyInitialFilters(){
+  const f=loadFilterFromUrl();
+  const hasUrl=f.areas||f.types||f.coms||f.lays||f.pmin||f.pmax;
+  preSelectDd('dd-area', hasUrl&&f.areas?f.areas:['尚順昌隆','公園東站','大埔'], '全部區域');
+  onAreaChange();
+  setTimeout(()=>{
+    preSelectDd('dd-type', hasUrl&&f.types?f.types:['電梯大樓'], '全部型態');
+    if(hasUrl){
+      if(f.coms) preSelectDd('dd-com',f.coms,'全部社區');
+      if(f.lays) preSelectDd('dd-lay',f.lays,'全部格局');
+      if(f.pmin) document.getElementById('f-pmin').value=f.pmin;
+      if(f.pmax) document.getElementById('f-pmax').value=f.pmax;
     }
+    onTypeChange();
+  },50);
+}
 
-    DATA = allData;
-    buildDropdowns();
-    buildMarkers();
-    // 地圖容器尺寸確認後再畫區域多邊形
-    map.invalidateSize();
-    buildZones();
-    // 預設勾選區域
-    preSelectDd('dd-area', ['尚順昌隆', '公園東站', '大埔'], '全部區域');
-    // 先觸發區域連動，讓社區選單更新
-    onAreaChange();
-    // 預設勾選物件型態（大樓及華廈，名稱需與試算表一致）
-    // 等型態選單從資料動態建立後再勾選
-    setTimeout(()=>{
-      preSelectDd('dd-type', ['電梯大樓'], '全部型態');
-      onTypeChange();
-    }, 50);
+async function loadData(){
+  const overlay=document.getElementById('overlay');
+  const msg=document.getElementById('overlay-msg');
+
+  // 快取命中：立即渲染，背景更新
+  const cached=loadCache();
+  if(cached){
+    renderData(cached);
+    applyInitialFilters();
+    const btn=document.querySelector('.refresh-btn');
+    btn.textContent='⟳ 更新中…'; btn.style.opacity='0.6';
+    fetchAllSheets().then(fresh=>{
+      if(fresh&&fresh.length){
+        saveCache(fresh);
+        // 儲存當前篩選狀態，重新渲染後還原
+        const sa=getSelected('dd-area'),st=getSelected('dd-type');
+        const sc=getSelected('dd-com'),sl=getSelected('dd-lay');
+        const sp=document.getElementById('f-pmin').value,sq=document.getElementById('f-pmax').value;
+        renderData(fresh);
+        preSelectDd('dd-area',sa,'全部區域'); onAreaChange();
+        setTimeout(()=>{
+          preSelectDd('dd-type',st,'全部型態');
+          preSelectDd('dd-com',sc,'全部社區');
+          preSelectDd('dd-lay',sl,'全部格局');
+          document.getElementById('f-pmin').value=sp;
+          document.getElementById('f-pmax').value=sq;
+          onTypeChange();
+        },50);
+      }
+    }).catch(e=>console.warn('背景更新失敗',e))
+    .finally(()=>{ const b=document.querySelector('.refresh-btn'); b.textContent='⟳ 重新整理'; b.style.opacity=''; });
+    return;
+  }
+
+  // 無快取：正常載入
+  overlay.classList.remove('hidden');
+  msg.textContent='正在讀取資料…';
+  try{
+    const allData=await fetchAllSheets();
+    if(!allData||!allData.length) throw new Error('所有工作表皆無法讀取，請確認試算表設定');
+    saveCache(allData);
+    renderData(allData);
+    applyInitialFilters();
     overlay.classList.add('hidden');
-
-  } catch(e) {
-    console.error(e);
-    console.error('loadData error:', e);
-    msg.innerHTML = '❌ 讀取失敗：' + e.message + '<br><small>請確認試算表已設為「知道連結的人均可檢視」</small>';
-    setTimeout(()=>overlay.classList.add('hidden'), 6000);
+  }catch(e){
+    console.error('loadData error:',e);
+    msg.innerHTML='❌ 讀取失敗：'+e.message+'<br><small>請確認試算表已設為「知道連結的人均可檢視」</small>';
+    setTimeout(()=>overlay.classList.add('hidden'),6000);
   }
 }
 
