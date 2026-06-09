@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>飛鷹地產 政翔｜在售物件地圖</title>
+<title>飛鷹地產｜政翔在售物件地圖</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.css"/>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.Default.css"/>
@@ -138,14 +138,14 @@ header h1{font-size:17px;font-weight:700;letter-spacing:.03em}
 .pu-id{font-size:11px;color:#aaa;margin-top:8px}
 .pu-id a{color:#1a3a5c;text-decoration:none;font-weight:600;border-bottom:1px dashed #1a3a5c}
 .pu-id a:hover{color:#c0392b;border-color:#c0392b}
-/* ── 聯絡按鈕 ── */
-.contact-btn{display:inline-flex;align-items:center;gap:5px;font-size:12px;padding:5px 13px;border-radius:20px;text-decoration:none;font-weight:700;transition:background .15s;white-space:nowrap}
-.call-btn{background:#27ae60;color:#fff}
-.call-btn:hover{background:#219a52}
-.line-btn{background:#06c755;color:#fff}
-.line-btn:hover{background:#05b34d}
+/* ── 右下角浮動聯絡按鈕 ── */
+.fab-group{position:fixed;bottom:24px;right:24px;display:flex;flex-direction:column;gap:10px;z-index:1001}
+.fab{display:flex;align-items:center;justify-content:center;gap:8px;padding:12px 20px;border-radius:30px;text-decoration:none;font-weight:700;font-size:14px;color:#fff;box-shadow:0 4px 16px rgba(0,0,0,.28);transition:transform .15s,box-shadow .15s;white-space:nowrap}
+.fab:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(0,0,0,.35)}
+.fab-call{background:#27ae60}
+.fab-line{background:#06c755}
 /* ── 物件 Popup 詢問按鈕 ── */
-.pu-inquiry{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:10px;padding:9px;background:#06c755;color:#fff;border-radius:8px;font-size:13px;font-weight:700;text-decoration:none;transition:background .15s}
+.pu-inquiry{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:10px;padding:9px;background:#06c755;color:#fff;border-radius:8px;font-size:13px;font-weight:700;text-decoration:none;cursor:pointer;border:none;width:100%;transition:background .15s}
 .pu-inquiry:hover{background:#05b34d}
 </style>
 </head>
@@ -157,10 +157,8 @@ header h1{font-size:17px;font-weight:700;letter-spacing:.03em}
 </div>
 
 <header>
-  <h1>🏠 飛鷹地產 政翔｜在售物件地圖</h1>
+  <h1>🏠 飛鷹地產｜政翔在售物件地圖</h1>
   <div class="hright">
-    <a href="tel:0928713239" class="contact-btn call-btn">📞 電話</a>
-    <a href="https://line.me/ti/p/nG3aUJrma7" target="_blank" rel="noopener" class="contact-btn line-btn">💬 LINE</a>
     <span class="count-badge" id="cnt">載入中…</span>
     <button class="refresh-btn" onclick="loadData()">⟳ 重新整理</button>
   </div>
@@ -438,17 +436,6 @@ function popupHtml(d){
     ? `<a href="${d.物件連結}" target="_blank" rel="noopener">🔗 ${d.物件編號}</a>`
     : d.物件編號;
 
-  const lineMsg = encodeURIComponent(
-    `您好政翔！我在飛鷹地產物件地圖看到一個物件想了解更多🏠\n\n` +
-    `📌 ${d.案名||''}\n` +
-    `💰 售價 ${d.售價||'洽談'}\n` +
-    `🏠 ${d.型態||''} ／ ${d.格局||''}\n` +
-    `📐 ${d.坪數||''}坪　樓層 ${d.樓層||'—'}\n` +
-    `🏘️ ${d.社區||''}　${d.區域||''}\n` +
-    `🚗 ${d.車位||'無車位'}\n\n` +
-    `請問方便介紹嗎？謝謝！`
-  );
-
   return `
     <div class="pu-title">${d.案名||''}</div>
     <div class="pu-price">${d.售價||'洽談'}</div>
@@ -463,7 +450,7 @@ function popupHtml(d){
       <tr><td>區域</td><td>${d.區域||'—'}</td></tr>
     </table>
     <div class="pu-id">物件編號：${idHtml}</div>
-    <a href="https://line.me/R/msg/text/?${lineMsg}" target="_blank" rel="noopener" class="pu-inquiry">💬 LINE 詢問政翔此物件</a>`;
+    <a href="#" class="pu-inquiry" onclick="lineInquiry(event,${d.id})">💬 LINE 詢問政翔此物件</a>`;
 }
 
 // ── 清除並重建 markers ──
@@ -1080,7 +1067,53 @@ async function loadData(){
   }
 }
 
+// ── LINE 詢問功能 ──
+function copyFallback(text){
+  const el=document.createElement('textarea');
+  el.value=text; el.style.cssText='position:fixed;opacity:0';
+  document.body.appendChild(el); el.select();
+  try{ document.execCommand('copy'); }catch(e){}
+  document.body.removeChild(el);
+}
+function showToast(msg){
+  const t=document.createElement('div');
+  t.textContent=msg;
+  t.style.cssText='position:fixed;bottom:90px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.78);color:#fff;padding:9px 20px;border-radius:20px;font-size:13px;z-index:9999;pointer-events:none;white-space:nowrap';
+  document.body.appendChild(t);
+  setTimeout(()=>t.remove(), 2800);
+}
+function lineInquiry(e, id){
+  e.preventDefault();
+  const d=DATA.find(x=>x.id===id);
+  if(!d) return;
+  const msg=
+    `您好政翔！我在飛鷹地產物件地圖看到一個物件想了解更多🏠\n\n`+
+    `📌 ${d.案名||''}\n`+
+    `💰 售價 ${d.售價||'洽談'}\n`+
+    `🏠 ${d.型態||''} ／ ${d.格局||''}\n`+
+    `📐 ${d.坪數||''}坪　樓層 ${d.樓層||'—'}\n`+
+    `🏘️ ${d.社區||''}　${d.區域||''}\n`+
+    `🚗 ${d.車位||'無車位'}\n\n`+
+    `請問方便介紹嗎？謝謝！`;
+  const done=()=>{
+    showToast('✓ 訊息已複製，在 LINE 對話中貼上後送出即可');
+    setTimeout(()=>window.open('https://line.me/ti/p/nG3aUJrma7','_blank'), 300);
+  };
+  if(navigator.clipboard){
+    navigator.clipboard.writeText(msg).then(done).catch(()=>{ copyFallback(msg); done(); });
+  } else {
+    copyFallback(msg); done();
+  }
+}
+
 loadData();
 </script>
+
+<!-- 右下角浮動聯絡按鈕 -->
+<div class="fab-group">
+  <a href="tel:0928713239" class="fab fab-call">📞 電話聯絡</a>
+  <a href="https://line.me/ti/p/nG3aUJrma7" target="_blank" rel="noopener" class="fab fab-line">💬 LINE 聯絡</a>
+</div>
+
 </body>
 </html>
